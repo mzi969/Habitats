@@ -90,12 +90,22 @@ for i = 1:numPatients
     save(path, 'allSuperpixels', 'idxCount', 'casesName');   
 
 %%%%%%%%%%%%%%%kmeans
+
 SuperpixelsDir = fullfile(rootDir, 'Results', 'Superpixels');
 if ~exist(SuperpixelsDir, 'dir')
     mkdir(SuperpixelsDir)
 end
 
 resultsDir = fullfile(rootDir, 'Results');
+
+SuperpixelsDir = fullfile(rootDir, 'Results925', 'Superpixels');   
+supPath = fullfile(rootDir, 'Results', 'supPixels.mat');      
+caseList = dir(fullfile(SuperpixelsDir, '*.mat'));              
+numCases = length(caseList);
+
+load(supPath);                                                  
+
+allSuperpixels = allSuperpixels(:, 3);     % mean
 
 rng('default')  
 kmeansParams = {'Replicates', 10, 'MaxIter', 1000, 'Start', 'plus'};
@@ -111,16 +121,16 @@ disp(evaluation2.OptimalK);
 figure;
 subplot(1,2,1);
 plot(evaluation1);
-xlabel('聚类数');
-ylabel('Calinski-Harabasz 指数');
-title('Calinski-Harabasz 指数');
+xlabel('clusters');
+ylabel('Calinski-Harabasz index');
+title('Calinski-Harabasz index');
 
 % Davies-Bouldin curve
 subplot(1,2,2);
 plot(evaluation2);
-xlabel('聚类数');
-ylabel('Davies-Bouldin 指数');
-title('Davies-Bouldin 指数');
+xlabel('clusters');
+ylabel('Davies-Bouldin index');
+title('Davies-Bouldin index');
 
 % select num of Cluster
 numCluster = 4;                           
