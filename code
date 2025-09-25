@@ -1,0 +1,267 @@
+%%%%%%%%%%%%%%%SLIC
+
+rootDir = 'C:\Users\Administrator\Desktop\habcode';
+imgDir = 'C:\Users\Administrator\Desktop\habcode\Data_raw';
+
+Output = [rootDir '\Results\InputImages'];
+if ~exist(Output, 'dir')
+    mkdir(Output);
+end 
+
+SuperpixelsDir = fullfile(rootDir, 'Results', 'Superpixels');
+if ~exist(SuperpixelsDir, 'dir')
+    mkdir(SuperpixelsDir)
+end 
+
+ctFiles = dir(fullfile(imgDir, '*.nii.gz'));
+ctFiles = ctFiles(~contains({ctFiles.name}, '_mask'));
+
+numPatients = length(ctFiles);   
+casesName = {ctFiles.name};        
+casesName = cellfun(@(x) x(1:end-7), casesName, 'UniformOutput', false);
+
+allSuperpixels = cell(numPatients, 1); 
+idxCount = zeros(numPatients, 1);      
+
+for i = 1:numPatients
+    pName = casesName{i};
+    disp(['Processing ', num2str(i), '/', num2str(numPatients), ' ', pName]);
+
+    niftiFile = ctFiles(i).name;
+    niftiPath = fullfile(imgDir, niftiFile);   
+    ctImage = niftiread(niftiPath);                 
+    ctInfo = niftiinfo(niftiPath);                    
+    imgSize = ctInfo.ImageSize;                       
+    pixelDim = ctInfo.PixelDimensions;                
+    
+    if ctInfo.AdditiveOffset == -1024
+        ctImage = ctImage - 1024;                     
+    end
+
+    maskFile = [pName '_mask.nii.gz'];
+    segPath = fullfile(imgDir, maskFile);
+    segImage = niftiread(segPath);
+    seg = logical(segImage);
+    
+    CC = bwconncomp(seg);                             
+    numPixels = cellfun(@numel, CC.PixelIdxList);      
+    [~, idx] = max(numPixels);                         
+    filteredSeg = false(size(seg));                   
+    filteredSeg(CC.PixelIdxList{idx}) = true;         
+
+    ctLung = double(ctLung); 
+
+    [boxBound] = computeBoundingBox(maskSeg);         
+    maskSeg = maskSeg(boxBound(1, 1):boxBound(1, 2), ...
+                      boxBound(2, 1):boxBound(2, 2), ...
+                      boxBound(3, 1):boxBound(3, 2));
+    ctLung = ctLung(boxBound(1, 1):boxBound(1, 2), ...
+                    boxBound(2, 1):boxBound(2, 2), ...
+                    boxBound(3, 1):boxBound(3, 2));
+
+    ctLung_roi = ctLung(maskSeg);                     
+    ctLung = ctLung.*maskSeg;
+
+    % SLIC
+    numSuperpixels = 50; 
+    [L, N] = superpixels3(ctLung, numSuperpixels, 'Method', 'slic', 'Compactness', 1e-2);
+
+    indices = find(maskSeg==1);
+    [rows, cols, slices] = ind2sub(size(maskSeg), indices);
+    features = [double(ctLung_roi), double(rows), double(cols), double(slices)];
+    
+    idxCL = L(maskSeg);
+
+    superpixel = zeros(length(unique(idxCL)), 10); 
+    label = unique(idxCL);                         
+
+    for kk = 1:length(label)                                              
+        ind = find(idxCL==label(kk));             
+        clusterData = double(ctLung_roi(ind));
+        Sfea = histFeas(clusterData);
+        superpixel(kk,:) = Sfea;
+    end
+
+    allSuperpixels{i} = superpixel;               
+    idxCount(i) = length(unique(idxCL));          
+
+    path = fullfile(rootDir, 'Results', 'supPixels');          
+    allSuperpixels = cell2mat(allSuperpixels);                 
+    save(path, 'allSuperpixels', 'idxCount', 'casesName');   
+
+%%%%%%%%%%%%%%%kmeans
+SuperpixelsDir = fullfile(rootDir, 'Results', 'Superpixels');
+if ~exist(SuperpixelsDir, 'dir')
+    mkdir(SuperpixelsDir)
+end
+
+resultsDir = fullfile(rootDir, 'Results');
+
+rng('default')  
+kmeansParams = {'Replicates', 10, 'MaxIter', 1000, 'Start', 'plus'};
+kmeansFunc = @(X, k) kmeans(X, k, kmeansParams{:});
+% CH 
+evaluation1 = evalclusters(allSuperpixels, kmeansFunc,'CalinskiHarabasz', 'KList', 2:10) 
+disp(evaluation1.OptimalK);
+% DB 
+evaluation2 = evalclusters(allSuperpixels, kmeansFunc,'DaviesBouldin', 'KList', 2:10) 
+disp(evaluation2.OptimalK);
+
+% Calinski-Harabasz curve
+figure;
+subplot(1,2,1);
+plot(evaluation1);
+xlabel('聚类数');
+ylabel('Calinski-Harabasz 指数');
+title('Calinski-Harabasz 指数');
+
+% Davies-Bouldin curve
+subplot(1,2,2);
+plot(evaluation2);
+xlabel('聚类数');
+ylabel('Davies-Bouldin 指数');
+title('Davies-Bouldin 指数');
+
+% select num of Cluster
+numCluster = 4;                           
+numNeighbor = size(allSuperpixels, 1);    
+idxPL = kmeans(allSuperpixels,numCluster,'MaxIter',1000,'Replicates',10); 
+gnd = mat2cell(idxPL, idxCount);  
+
+gndFilePath = fullfile(resultsDir, 'gnd.mat');  
+save(gndFilePath, 'gnd');                   
+
+%%%%%%%%%%%%%%%habitats
+SubregionsDir = fullfile(rootDir, 'Results', 'TumorPartitions'); 
+if ~exist(SubregionsDir, 'dir')
+    mkdir(SubregionsDir)
+end
+
+HabitatPath = fullfile(rootDir, 'Results', 'Habitat maps');      
+if ~exist(HabitatPath, 'dir')
+    mkdir(HabitatPath);
+end 
+Output = [rootDir '\Results\InputImages'];
+if ~exist(Output, 'dir')
+    mkdir(Output);
+end 
+SuperpixelsDir = fullfile(rootDir, 'Results', 'Superpixels');  
+supPath = fullfile(rootDir, 'Results', 'supPixels.mat');       
+
+caseList = dir(fullfile(SuperpixelsDir, '*.mat'));             
+numCases = length(caseList);
+
+resultsDir = fullfile(rootDir, 'Results');
+loadedGndFilePath = fullfile(resultsDir, 'gnd.mat');  
+loadedData = load(loadedGndFilePath);                
+gnd = loadedData.gnd;    
+
+allVolumes = cell(numCases, 1);
+
+for p = 1:numCases  
+    caseName = caseList(p).name; 
+    featuresPath = fullfile(SuperpixelsDir, caseName);
+    disp(['Processing ', num2str(p), ' of ', num2str(numCases)]); 
+    load(featuresPath, 'features', 'idxCL', 'indices', 'label', 'imgSize', 'pixelDim'); 
+
+    superpixelsIdx = gnd{p};
+    pixelsIdx = idxCL;
+    idxPL = idxCL;
+    for i = 1:length(label)
+        habitatId = superpixelsIdx(i);
+        idxPL(pixelsIdx == label(i)) = habitatId;
+    end
+
+    numHabitats = max(idxPL); 
+    habitatVolumes = zeros(numHabitats, 1);
+    voxelVolume = pixelDim(1) * pixelDim(2) * pixelDim(3);
+
+    for h = 1:numHabitats
+        habitatMask = (idxPL == h);
+        habitatVolumes(h) = sum(habitatMask(:)) * voxelVolume;
+    end
+
+    caseVolumeData = cell(1, numHabitats + 1);
+    caseVolumeData{1} = {caseName};
+    for h = 1:numHabitats
+        caseVolumeData{h + 1} = {habitatVolumes(h)};
+    end
+    allVolumes{p} = caseVolumeData;
+    
+    rows = features(:,2) - min(features(:,2));
+    cols = features(:,3) - min(features(:,3));
+    slices = features(:,4) - min(features(:,4));
+
+    max_row = ceil(max(rows)) + 3;
+    max_col = ceil(max(cols)) + 3;
+    max_slice = ceil(max(slices)) + 3;
+
+    reconCT = zeros(max_row, max_col, max_slice);
+    seg = zeros(max_row, max_col, max_slice);
+    map = zeros(max_row, max_col, max_slice);
+    for j = 1:length(idxCL)
+        reconCT(ceil(rows(j)) + 2, ceil(cols(j)) + 2, ceil(slices(j)) + 2) = features(j,1);
+        seg(ceil(rows(j)) + 2, ceil(cols(j)) + 2, ceil(slices(j)) + 2) = idxCL(j);
+        map(ceil(rows(j)) + 2, ceil(cols(j)) + 2, ceil(slices(j)) + 2) = idxPL(j);
+    end
+
+    habitatname = [HabitatPath '\' caseName(1:end-4) '_Habitats.tiff'];
+    f = figure('visible', 'on');
+    TumorVox = sum(sum(logical(map),1),2);
+    TumorVox = TumorVox(:);
+    [~,idx] = max(TumorVox);
+
+    subplot(3,1,1)
+    imshow(reconCT(:,:,idx),[])
+    title('Original CT')
+
+    ax = subplot(3,1,2);
+    imshow(label2rgb(seg(:,:,idx),'jet','k','shuffle'));
+    title('Superpixels')
+
+    bx = subplot(3,1,3);
+    imshow(map(:,:,idx),[])
+    title('Habitats')
+    colormap(bx,jet)
+
+    saveas(f,habitatname)
+    close(f)    
+
+    subregionsPath = fullfile(SubregionsDir, caseName);
+    save(subregionsPath, 'features', 'idxCL', 'indices', 'label', 'idxPL', 'imgSize', 'pixelDim');
+
+    caseName = caseList(p).name;
+    featuresPath = fullfile(SuperpixelsDir, caseName);
+    disp(['Processing ', num2str(p), ' of ', num2str(numCases)]);
+
+    load(featuresPath, 'features', 'idxCL', 'label', 'imgSize', 'pixelDim');
+
+    superpixelsIdx = gnd{p};  
+    idxPL = idxCL;
+    for i = 1:length(label)
+        idxPL(idxCL == label(i)) = superpixelsIdx(i);
+    end
+end
+
+maxHabitats = max(cellfun(@(x) length(x) - 1, allVolumes));
+
+csvHeader = {'CaseName'};
+for h = 1:maxHabitats
+    csvHeader{end + 1} = sprintf('Habitat%dVolume', h);
+end
+
+csvData = cell(numCases, maxHabitats + 1);
+for p = 1:numCases
+    caseData = allVolumes{p};
+    caseName = caseData{1};
+    csvData(p, 1) = {caseName};
+    numVolumes = length(caseData) - 1;
+    for h = 1:numVolumes
+        csvData(p, h + 1) = caseData{h + 1};
+    end
+end
+
+csvTable = [csvHeader; csvData];
+
+csvFileName = fullfile(rootDir, 'Results', 'AllHabitatVolumes.csv');
+writetable(cell2table(csvTable(2:end, :), 'VariableNames', csvTable(1, :)), csvFileName);
